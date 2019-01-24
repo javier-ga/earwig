@@ -9,7 +9,8 @@ import time
 import ujson
 
 from selenium.webdriver.support.ui import WebDriverWait
-
+from pyvirtualdisplay import Display
+from selenium.common.exceptions import TimeoutException
 
 ERR_RETRY_LIMIT = 1
 ERR_HTTP = 2
@@ -77,15 +78,46 @@ def fetch_cookies():
     user, password = get_credentials()
 
     URL = 'https://play.google.com/apps/publish/#ApiAccessPlace'
-    browser = webdriver.Safari()
+
+    display = Display(visible=0, size=(800, 600))
+    display.start()
+    logging.info('Initialized virtual display..')
+
+    firefox_profile = webdriver.FirefoxProfile()
+    firefox_profile.set_preference('browser.download.folderList', 2)
+    firefox_profile.set_preference('browser.download.manager.showWhenStarting', False)
+    firefox_profile.set_preference('browser.download.dir', os.getcwd())
+    firefox_profile.set_preference('browser.helperApps.neverAsk.saveToDisk', 'text/csv')
+
+    browser = webdriver.Firefox(firefox_profile=firefox_profile)
+    logging.info('Initialized chrome browser..')
+
     browser.get(URL)
     element(browser, 'identifierId').send_keys(user + Keys.ENTER)
 
+    element(browser, 'user_email').clear()
+    element(browser, 'user_email').click() # .send_keys(user)
+    element(browser, 'user_password').send_keys(" " + Keys.BACK_SPACE + Keys.BACK_SPACE) #Sometimes the first 
     element(browser, 'user_email').send_keys(user)
     element(browser, 'user_password').send_keys(password + Keys.ENTER)
-    WebDriverWait(browser, 10).until(
-        presence_of_all_cookies('SID', 'SSID', 'HSID',
+    logging.info('Page title: %s', browser.title)
+    try:
+        WebDriverWait(browser, 10).until(
+            presence_of_all_cookies('SID', 'SSID', 'HSID',
                                 'APISID', 'SAPISID', 'NID', 'SIDCC'))
+    except TimeoutException as toe:
+        logging.error('Cookies lookup failed.. %s - <screen> %s', toe.msg, toe.screen)
+        logging.error('Cookies lookup stacktrace %s \n\n', toe.stacktrace)
+
+        cookies_list = browser.get_cookies()
+        cookies_dict = {}
+        for cookie in cookies_list:
+            cookies_dict[cookie['name']] = cookie['value']
+
+        logging.error(cookies_dict)
+
+        logging.error( browser.page_source.encode("utf-8") )
+        raise Exception('Cookies not found dur to error - '+ toe.msg)
 
     cookies = {c['name']: c['value'] for c in browser.get_cookies()
                if c['name'] in ('SID', 'SSID', 'HSID')}
@@ -219,6 +251,15 @@ class PlayDriver(object):
         CMD = 'getAndroidMetricsClusterStatistics'
         return self._execute(CMD, data)
 
+    def refreshState(self):
+        state = self.state
+        self.logger.info("Fetching cookies with Selenium")
+        state.cookies = fetch_cookies()
+        state.save()
+        self.logger.info("Fetching xsrf and gwt tokens")
+        state.xsrf, state.gwt = fetch_tokens(state.cookies)
+        state.save()
+
     def _execute(self, cmd, cmd_params):
         URL = 'https://play.google.com/apps/publish/errorreports'
 
@@ -243,7 +284,7 @@ class PlayDriver(object):
             if 'HSID=' in sc or 'SID=' in sc:
                 self.logger.warn("Set-Cookie: %s", sc)
             if r.status_code != 200:
-                if 'captcha' in self.text:
+                if 'captcha' in r.text:
                     raise DriverException(ERR_CAPTCHA, response=r)
                 raise DriverException(ERR_HTTP, response=r)
             response = r.json()
@@ -254,6 +295,8 @@ class PlayDriver(object):
                 raise DriverException(ERR_RETRY_LIMIT, response=r)
             code = error['code']
             if code != 6800004:
+                print r.text
+                print r.content
                 raise DriverException(code, response=r)
             self.logger.warn("Error 6800004. Retrying after %s seconds", pause)
             time.sleep(pause)

@@ -18,5 +18,6 @@ setup(name='earwig',
           'dateparser',
           'requests',
           'selenium',
-          'ujson'
+          'ujson',
+          'pyvirtualdisplay'
       ])

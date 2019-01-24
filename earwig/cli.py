@@ -120,6 +120,9 @@ class Earwig(object):
                 except Queue.Empty:
                     pass
 
+    def refresh_state(self):
+        driver = PlayDriver(self.account_id, headless=self.headless)
+        driver.refreshState()
 
 def opt_timestamp(s):
     import dateparser
@@ -147,55 +150,46 @@ def main():
 
 
     parser = argparse.ArgumentParser(description="Download Google Play ANR reports")
-    parser.add_argument('-f', '--from', dest='from_time', type=opt_timestamp,
+
+    subparsers = parser.add_subparsers(dest='cmd')
+    parser_refresh = subparsers.add_parser('refresh',
+                help="Refresh cookies using credentials in ~/.earwig/earwig.properties file")
+
+    parser_fetch = subparsers.add_parser('fetch', help='fetch data')
+    parser_fetch.add_argument('-f', '--from', dest='from_time', type=opt_timestamp,
                         help='specify download start time '
                         '(defaults to the previous hour)')
-    parser.add_argument('-t', '--to', dest='to_time', type=opt_timestamp,
+    parser_fetch.add_argument('-t', '--to', dest='to_time', type=opt_timestamp,
                         help='specify download end time')
-    parser.add_argument('-i', '--interval', type=int,
+    parser_fetch.add_argument('-i', '--interval', type=int,
                         help='specify time period to download, in seconds '
                         '(defaults to 1 hour)')
-    parser.add_argument('-o', '--output',
+    parser_fetch.add_argument('-o', '--output',
                         help='specify the output filename '
                         '(defaults to output/YYYYMMDD/HH.json.gz)')
-    parser.add_argument('-j', '--threads', default=1, type=int,
+    parser_fetch.add_argument('-j', '--threads', default=1, type=int,
                         help='set the parallelism (default: 1)')
-    parser.add_argument('-H', '--headless', action='store_true',
+    parser_fetch.add_argument('-H', '--headless', action='store_true',
                         help="run in headless mode, i.e. do not use Selenium "
                         "and expect a valid state file to be present")
-    parser.add_argument('-q', '--quiet', action='store_true',
+    parser_fetch.add_argument('-q', '--quiet', action='store_true',
                         help='minimize execution output')
-    parser.add_argument('-v', '--verbose', action='store_true',
+    parser_fetch.add_argument('-v', '--verbose', action='store_true',
                         help='report more information during execution')
-    parser.add_argument('account_id',
+    parser_fetch.add_argument('account_id',
                         help='the account id to download reports for')
-    parser.add_argument('bundle_id',
+    parser_fetch.add_argument('bundle_id',
                         help='the bundle id to download reports for')
 
     opts = parser.parse_args(sys.argv[1:])
 
-    if opts.to_time and opts.interval:
-        _error("only one of --to and --interval may be specified")
-
-    fmt = 'output/%Y%m%d/%H.json.gz'
-
-    interval = opts.interval or 3600
-    start_time = opts.from_time or _previous_hour()
-    end_time = opts.to_time or start_time + interval
-    output_path = opts.output or time.strftime(fmt, time.localtime(start_time))
-
-    if output_path != '-':
-        subdir, _ = os.path.split(output_path)
-        if subdir and not os.path.exists(subdir):
-            os.makedirs(subdir)
-        if not os.path.isdir(subdir):
-            _error('%s is not a directory' % subdir)
-
-    log_level = 10 if opts.verbose else 20 if not opts.quiet else 30
-    logging.basicConfig(format="%(asctime)s [%(threadName)-10s] %(levelname)5s %(name)-8s %(message)s", level=log_level)
-
-    wig = Earwig(opts.account_id, opts.bundle_id, start_time, end_time,
-                 parallelism=opts.threads, headless=opts.headless)
+    def refresh_state(earwig):
+        try:
+            logger = logging.getLogger('main')
+            logger.info("Refreshing state only")
+            earwig.refresh_state()
+        except KeyboardInterrupt:
+            earwig.terminate(2)
 
     def sink(earwig, fp):
         try:
@@ -210,12 +204,44 @@ def main():
         except KeyboardInterrupt:
             earwig.terminate(2)
 
-    if output_path == '-':
-        sink(wig, sys.stdout)
-    else:
-        import gzip
-        open_fn = gzip.open if output_path.endswith('.gz') else open
-        with open_fn(output_path, 'wb') as output:
-            sink(wig, output)
+    if opts.cmd == "fetch":
+        if opts.to_time and opts.interval:
+            _error("only one of --to and --interval may be specified")
+
+        fmt = 'output/%Y%m%d/%H.json.gz'
+
+        interval = opts.interval or 3600
+        start_time = opts.from_time or _previous_hour()
+        end_time = opts.to_time or start_time + interval
+        output_path = opts.output or time.strftime(fmt, time.localtime(start_time))
+
+        if output_path != '-':
+            subdir, _ = os.path.split(output_path)
+            if subdir and not os.path.exists(subdir):
+                os.makedirs(subdir)
+            if not os.path.isdir(subdir):
+                _error('%s is not a directory' % subdir)
+
+        log_level = 10 if opts.verbose else 20 if not opts.quiet else 30
+        logging.basicConfig(format="%(asctime)s [%(threadName)-10s] %(levelname)5s %(name)-8s %(message)s", level=log_level)
+
+        wig = Earwig(opts.account_id, opts.bundle_id, start_time, end_time,
+                    parallelism=opts.threads, headless=opts.headless)
+
+        if output_path == '-':
+            sink(wig, sys.stdout)
+        else:
+            import gzip
+            open_fn = gzip.open if output_path.endswith('.gz') else open
+            with open_fn(output_path, 'wb') as output:
+                sink(wig, output)
+
+    if opts.cmd == "refresh":
+        wig = Earwig(None, None, 0, 0)
+        refresh_state(wig)
 
     sys.exit(wig.rc)
+
+#for debugging
+if __name__ == "__main__":
+    main()
